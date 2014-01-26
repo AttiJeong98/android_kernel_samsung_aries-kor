@@ -1,0 +1,58 @@
+#!/stage1/busybox sh
+export _PATH="$PATH"
+export PATH=/stage1
+
+cd /
+busybox rm -f init
+busybox mount -t proc proc /proc
+busybox mount -t sysfs sysfs /sys
+
+while ! busybox test -d /sys/dev/block/179:0 ; do
+	busybox sleep 0.1
+done
+
+/lvm/sbin/lvm vgscan --mknodes --ignorelockingfailure
+/lvm/sbin/lvm vgchange -aly --ignorelockingfailure
+
+busybox mount -t yaffs2 /dev/block/mtdblock3 /cache
+
+image=/stage1/ramdisk.img
+image_compression=none
+
+if busybox test -e /cache/.startrecovery || busybox grep -q bootmode=2 /proc/cmdline ; then
+	# recovery boot
+	busybox rm -fr /cache/.startrecovery
+	image=/stage1/ramdisk-recovery.img
+	image_compression=lzma
+
+	# disable lpm
+	busybox echo 0 > /sys/class/power_supply/battery/charging_mode_booting
+fi
+
+busybox umount /cache
+busybox umount /sdcard
+busybox rmdir /sdcard
+
+if [[ $image_compression == "lzma" ]]; then
+	busybox unlzma -c $image | busybox cpio -i
+	busybox mount -t ext4 /dev/lvpool/system /system
+	busybox mount -t f2fs /dev/lvpool/system /system
+	if busybox mount | busybox grep -q f2fs ; then
+		busybox cp fstab.f2fs fstab.aries
+	fi
+	busybox umount /system
+else
+	busybox cpio -i < $image
+fi
+
+if busybox grep -q 1 /sys/class/power_supply/battery/charging_mode_booting ; then
+	# low power mode
+	busybox cp lpm.rc init.rc
+	busybox rm init.aries.rc
+fi
+
+busybox umount /sys
+busybox umount /proc
+busybox rm -fr /stage1 /dev/*
+export PATH="${_PATH}"
+exec /init
